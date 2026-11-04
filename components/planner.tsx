@@ -82,7 +82,8 @@ export default function Planner() {
   function openEdit(a:Activity){setEditor({id:a.id,title:a.title,category:a.category,start:clockLabel(a.start),end:a.end===1440?'00:00':clockLabel(a.end)});setError('');}
   function saveActivity(e:React.FormEvent){
     e.preventDefault();if(!editor)return;
-    let start=readClock(editor.start),end=readClock(editor.end);
+    const start=readClock(editor.start);
+    let end=readClock(editor.end);
     if(end===0&&start>0)end=1440;
     if(!editor.title.trim()){setError('Enter a title.');return;}
     if(start%5!==0||end%5!==0){setError('Please use 5-minute intervals.');return;}
