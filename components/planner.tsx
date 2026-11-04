@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Activity, Category, PlannerData, EMPTY, COLORS, LABELS, localDate, dateFromKey, shiftDate, minutesLabel, clockLabel, readClock, clamp, snap5, unionMinutes, daySessions, actualStats, sampleActivities, downloadText, csvEscape, validateImport } from '@/lib/planner';
 import { Activity as ActivityIcon, BarChart3, CalendarDays, ChevronLeft, ChevronRight, Clock3, Download, Moon, Pause, Play, Plus, RotateCcw, Settings2, Sun, Trash2, Upload, X } from 'lucide-react';
 
@@ -15,30 +15,34 @@ function percent(n: number, d: number) {return d ? Math.round(n / d * 100) : 0;}
 function csv(rows: Array<Array<string|number>>) {return rows.map(r=>r.map(csvEscape).join(',')).join('\r\n');}
 
 export default function Planner() {
-  const [store,setStore] = useState<PlannerData>(EMPTY);
-  const [ready,setReady] = useState(false);
-  const [date,setDate] = useState('');
-  const [now,setNow] = useState<Date | null>(null);
+  // The server renders a loading shell; useSyncExternalStore signals hydration
+  // without synchronously setting React state inside an effect.
+  const ready = useSyncExternalStore(() => () => {}, () => true, () => false);
+  const [store,setStore] = useState<PlannerData>(() => {
+    if (typeof window === 'undefined') return EMPTY;
+    try {
+      const saved = window.localStorage.getItem(KEY);
+      return saved ? validateImport(JSON.parse(saved)) : {...EMPTY,activities:sampleActivities(localDate(new Date()))};
+    } catch {
+      return {...EMPTY,activities:sampleActivities(localDate(new Date()))};
+    }
+  });
+  const [date,setDate] = useState(() => typeof window === 'undefined' ? '' : localDate(new Date()));
+  const [now,setNow] = useState<Date | null>(() => typeof window === 'undefined' ? null : new Date());
   const [view,setView] = useState<View>('planned');
   const [panel,setPanel] = useState<Panel>('day');
   const [editor,setEditor] = useState<Editor|null>(null);
   const [error,setError] = useState('');
-  const [theme,setTheme] = useState<'light'|'dark'>('dark');
+  const [theme,setTheme] = useState<'light'|'dark'>(() => {
+    if (typeof window === 'undefined') return 'dark';
+    return window.localStorage.getItem(KEY+'-theme') === 'light' ? 'light' : 'dark';
+  });
   const [timerLabel,setTimerLabel] = useState('Deep work');
   const fileRef = useRef<HTMLInputElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{id:string;mode:'move'|'resize';y:number;start:number;end:number;moved:boolean}|null>(null);
   const blockClickRef = useRef(false);
   useEffect(()=>{
-    const today=localDate(new Date());
-    setDate(today);setNow(new Date());
-    try {
-      const saved=localStorage.getItem(KEY);
-      if(saved) setStore(validateImport(JSON.parse(saved)));
-      else setStore({...EMPTY, activities:sampleActivities(today)});
-      const t=localStorage.getItem(KEY+'-theme');if(t==='light'||t==='dark')setTheme(t);
-    } catch {setStore({...EMPTY,activities:sampleActivities(today)});}
-    setReady(true);
     const timer=window.setInterval(()=>setNow(new Date()),1000);
     const onStorage=(e:StorageEvent)=>{
       if(e.key===KEY&&e.newValue){try {setStore(validateImport(JSON.parse(e.newValue)));}catch{}}
@@ -121,7 +125,7 @@ export default function Planner() {
       return {...a,end:clamp(d.end+delta,d.start+5,1440)};
     })}));
   }
-  function onBlockUp(e:React.PointerEvent<HTMLDivElement>,a:Activity){
+  function onBlockUp(a:Activity){
     if(!dragRef.current)return;
     const moved=dragRef.current.moved;dragRef.current=null;
     if(!moved)openEdit(a);else blockClickRef.current=true;
@@ -161,7 +165,7 @@ export default function Planner() {
           <div className="timeline-scroll" ref={scroller}>
             <div className="timeline" onClick={e=>{if(view!=='planned'||blockClickRef.current){blockClickRef.current=false;return;}if((e.target as HTMLElement).closest('.task'))return;const r=e.currentTarget.getBoundingClientRect();openNew(e.clientY-r.top);}}>
               <div className="timeline-lines"/>{Array.from({length:24},(_,h)=><div key={h} className="time-label" style={{top:h*60}}>{String(h).padStart(2,'0')}:00</div>)}
-              <div className="task-layer">{view==='planned'?items.map(a=><div key={a.id} role="button" tabIndex={0} aria-label={'Edit '+a.title} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openEdit(a);}}} className={'task category-'+a.category} style={{top:a.start,height:a.end-a.start,background:COLORS[a.category]+'28',borderLeftColor:COLORS[a.category]}} onPointerDown={e=>onBlockDown(e,a,'move')} onPointerMove={onBlockMove} onPointerUp={e=>onBlockUp(e,a)} onPointerCancel={()=>{dragRef.current=null;}}>
+              <div className="task-layer">{view==='planned'?items.map(a=><div key={a.id} role="button" tabIndex={0} aria-label={'Edit '+a.title} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openEdit(a);}}} className={'task category-'+a.category} style={{top:a.start,height:a.end-a.start,background:COLORS[a.category]+'28',borderLeftColor:COLORS[a.category]}} onPointerDown={e=>onBlockDown(e,a,'move')} onPointerMove={onBlockMove} onPointerUp={()=>onBlockUp(a)} onPointerCancel={()=>{dragRef.current=null;}}>
                   <strong>{a.title}</strong>{a.end-a.start>=22&&<small>{clockLabel(a.start)} – {clockLabel(a.end)}</small>}<div className="task-grip" title="Drag to resize" onPointerDown={e=>{e.stopPropagation();onBlockDown(e,a,'resize');}}/>
                 </div>):actual.blocks.map((b,i)=><div key={i} className={'actual-block '+b.kind} style={{top:b.start,height:Math.max(1,b.end-b.start)}} title={b.kind+' · '+minutesLabel(b.end-b.start)}>{b.end-b.start>=24&&<span>{b.kind==='focus'?'Tracked focus':b.kind==='credited'?'Short break credited':'Dotted break'} · {minutesLabel(b.end-b.start)}</span>}</div>)}</div>
               {date===localDate(now)&&<div className="now-line" style={{top:now.getHours()*60+now.getMinutes()}}><b>NOW</b></div>}
